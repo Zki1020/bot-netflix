@@ -14,7 +14,26 @@ import requests
 from io import BytesIO
 from dotenv import load_dotenv
 
+# --- مكتبات خادم الويب لإبقاء البوت مستيقظاً على Render ---
+from flask import Flask
+
 load_dotenv()
+
+# --- إعداد خادم Flask الويبي ---
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "I am alive!"
+
+def run():
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = threading.Thread(target=run)
+    t.start()
+
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8415364406:AAGBVGsuVkQ6VBQN1ao8D_dh0fRKR3QJfgg")
 IMAP_SERVER = "imap.gmail.com"
@@ -146,7 +165,7 @@ def log_user_action_detail(user_obj, email_addr, service_type, result_status):
             f"🔗 اليوزرنيم      : {username_str}\n"
             f"📧 البريد المطلوب : {email_addr}\n"
             f"🛠 الخدمة المطلوبة : {service_type}\n"
-            f"📝 حالة النتيجة   : {result_status}\n"
+            f"📝 حالة النتيجة    : {result_status}\n"
             f"========================================\n\n"
         )
         
@@ -731,81 +750,9 @@ def handle_all_messages(message):
         bot.send_message(chat_id, "الرجاء كتابة البريد الإلكتروني الخاص بك الآن:")
         return
     elif text == "📞 الدعم الفني":
-        bot.send_message(chat_id, f"📞 يمكنك التواصل مع الدعم الفني عبر واتساب:\n{WHATSAPP_NUMBER}")
-        return
+        pass
 
-    now = time.time()
-    if user_id in user_cooldowns:
-        elapsed_time = now - user_cooldowns[user_id]
-        if elapsed_time < 30:
-            remaining_time = int(30 - elapsed_time)
-            msg = bot.send_message(chat_id, f"⏳ <b>الرجاء الانتظار {remaining_time} ثانية قبل إرسال بريد جديد حمايةً من الضغط.</b>", parse_mode="HTML")
-            threading.Thread(target=delete_message_later, args=(chat_id, msg.message_id, 5), daemon=True).start()
-            return
-    user_cooldowns[user_id] = now
-    register_user(message)
-    email_input = text.lower()
-    if "@" in email_input:
-        status = is_subscription_active(email_input, message.from_user.id)
-        if status == "active":
-            user_selected_emails[chat_id] = email_input
-            show_service_options(chat_id, email_input)
-        elif status == "inactive" or status == "expired":
-            bot.send_message(chat_id, "❌ <b>عذراً، هذا البريد الإلكتروني متوقف أو انتهت فترة صلاحيته.</b>", parse_mode="HTML")
-        elif status == "wrong_owner":
-            bot.send_message(chat_id, "⚠️ <b>عذراً، هذا البريد الإلكتروني مرتبط بمستخدم آخر.</b>", parse_mode="HTML")
-        else:
-            bot.send_message(chat_id, "❌ <b>البريد الإلكتروني غير موجود في قائمة الحسابات المصرحة.</b>", parse_mode="HTML")
-
-@bot.callback_query_handler(func=lambda call: True)
-def callback_handler(call):
-    if not call or not call.message or not call.message.chat:
-        return
-    register_user_from_user_obj(call.from_user)
-    
-    chat_id = call.message.chat.id
-    data = call.data
-    if data == "help":
-        bot.answer_callback_query(call.id, "أدخل بريدك الإلكتروني للحصول على الرمز أو الرابط.")
-    elif data == "reset_session":
-        bot.answer_callback_query(call.id, "الرجاء إدخال البريد الإلكتروني جديد.")
-        bot.send_message(chat_id, "الرجاء إدخال البريد الإلكتروني الخاص بك:")
-    elif data and data.startswith("type_"):
-        req_type = data.split("_")[1]
-        target_email = user_selected_emails.get(chat_id)
-        if not target_email:
-            bot.answer_callback_query(call.id, "الرجاء إدخال البريد الإلكتروني أولاً.")
-            return
-        
-        waiting_msg = bot.send_message(chat_id, "⏳ <b>جاري فحص علبة الوارد وجلب الطلب، يرجى الانتظار...</b>", parse_mode="HTML")
-        track_message(chat_id, waiting_msg.message_id)
-
-        bot.answer_callback_query(call.id, "جاري البحث...")
-        res_msg = fetch_specific_code(target_email, req_type)
-        
-        log_user_action_detail(call.from_user, target_email, req_type, res_msg.split('\n')[0] if res_msg else "No Response")
-        
-        try:
-            bot.delete_message(chat_id, waiting_msg.message_id)
-        except:
-            pass
-
-        sent = bot.send_message(chat_id, res_msg, reply_markup=get_result_inline_markup(), parse_mode="HTML", disable_web_page_preview=True)
-        track_message(chat_id, sent.message_id)
-        threading.Thread(target=delete_message_later, args=(chat_id, sent.message_id, 45), daemon=True).start()
-    elif data == "admin_stats":
-        total_emails = len(subscriptions)
-        active_emails = sum(1 for sub in subscriptions.values() if sub and sub.get("active", True))
-        inactive_emails = total_emails - active_emails
-        text = f"📈 <b>إحصائيات الإيميلات:</b>\n- المشتغلة: {active_emails}\n- المتوقفة: {inactive_emails}\n- الإجمالي: {total_emails}"
-        bot.answer_callback_query(call.id, "تم تحديث الإحصائيات")
-        bot.send_message(chat_id, text, parse_mode="HTML")
 
 if __name__ == "__main__":
-    print("Bot is running...")
-    while True:
-        try:
-            bot.infinity_polling(timeout=10, long_polling_timeout=5)
-        except Exception as e:
-            notify_admin_error(f"Bot crashed, restarting: {e}")
-            time.sleep(10)
+    keep_alive()
+    bot.infinity_polling()
