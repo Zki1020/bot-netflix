@@ -1,7 +1,6 @@
 from datetime import datetime, timedelta
-email.utils import parsedate_to_datetime
 import email
-from email import message_from_bytes
+from email.utils import parsedate_to_datetime
 from io import BytesIO
 import json
 import imaplib
@@ -552,3 +551,542 @@ def create_banner_with_text(text, image_url, output_path='banner.jpg'):
         font = ImageFont.load_default()
       width, height = img.size
       bbox = draw.textbbox((0, 0), text, font=font)
+      text_width = bbox[2] - bbox[0]
+      text_x = (width - text_width) // 2
+      text_y = int(height * 0.52)
+      draw.text((text_x, text_y), text, fill=(229, 9, 20), font=font)
+      img.save(output_path)
+      return output_path
+  except:
+    pass
+  return None
+
+
+def track_message(chat_id, message_id):
+  if chat_id and message_id:
+    if chat_id not in user_bot_messages:
+      user_bot_messages[chat_id] = []
+    user_bot_messages[chat_id].append(message_id)
+
+
+def clean_previous_messages(chat_id):
+  if chat_id and chat_id in user_bot_messages:
+    for msg_id in user_bot_messages[chat_id]:
+      try:
+        bot.delete_message(chat_id, msg_id)
+      except:
+        pass
+    user_bot_messages[chat_id] = []
+
+
+def delete_message_later(chat_id, message_id, delay=45):
+  time.sleep(delay)
+  try:
+    if chat_id and message_id:
+      bot.delete_message(chat_id, message_id)
+  except:
+    pass
+
+
+def connect_email(target_email):
+  try:
+    if not target_email:
+      return None
+    target_lower = target_email.strip().lower()
+    if target_lower in YAHOO_ACCOUNTS:
+      if target_lower.endswith('@aol.com'):
+        mail = imaplib.IMAP4_SSL(IMAP_AOL_SERVER, 993)
+      else:
+        mail = imaplib.IMAP4_SSL(IMAP_YAHOO_SERVER, 993)
+      mail.login(target_lower, YAHOO_ACCOUNTS[target_lower])
+      return mail
+    else:
+      mail = imaplib.IMAP4_SSL(IMAP_SERVER)
+      mail.login(EMAIL_ACCOUNT, EMAIL_PASSWORD)
+      return mail
+  except Exception as e:
+    notify_admin_error(f'Failed IMAP login for {target_email}: {e}')
+    return None
+
+
+def extract_netflix_link(body, request_type):
+  if not body:
+    return None
+  urls = re.findall(r"href=['\"]?([^'\" >]+)", body)
+  ignored_keywords = ['URL_LOGO', 'privacy', 'help', 'terms', 'unsub', 'contact']
+  valid_urls = []
+  for url in urls:
+    url = url.replace('&amp;', '&')
+    if 'netflix.com' in url:
+      if not any(ign in url for ign in ignored_keywords):
+        valid_urls.append(url)
+  for url in valid_urls:
+    if request_type == 'household' and (
+        'update-primary-location' in url
+        or 'travel' in url
+        or 'verify' in url
+        or 'account' in url
+    ):
+      return url
+    elif request_type == 'update_foyer' and (
+        'update-primary-location' in url
+        or 'foyer' in url
+        or 'household' in url
+        or 'account' in url
+    ):
+      return url
+    elif request_type == 'password' and (
+        'password' in url
+        or 'reset' in url
+        or 'login' in url
+        or 'account' in url
+    ):
+      return url
+    elif request_type == 'tv' and (
+        'tv' in url
+        or 'device' in url
+        or 'signin' in url
+        or 'update-primary-location' in url
+        or 'account' in url
+    ):
+      return url
+  if valid_urls:
+    return valid_urls[0]
+  return None
+
+
+def extract_netflix_code(body):
+  if not body:
+    return None
+  code_match = re.search(
+      r'(?:code|pin|identifier|رمز|كود)[\s:]*([0-9]{4})\b', body, re.IGNORECASE
+  )
+  if code_match:
+    return code_match.group(1)
+  matches = re.findall(r'\b\d{4}\b', body)
+  for m in matches:
+    if not (len(m) == 4 and m.startswith('202')):
+      return m
+  return None
+
+
+def fetch_specific_code(target_email, request_type):
+  mail = connect_email(target_email)
+  if not mail:
+    return '❌ Error connecting to the email server.'
+  try:
+    mail.select('inbox')
+    status, messages = mail.search(None, 'ALL')
+    if status != 'OK' or not messages or not messages[0].split():
+      try:
+        mail.logout()
+      except:
+        pass
+      return '❌ No messages found in the inbox.'
+    message_numbers = messages[0].split()
+    recent_messages = message_numbers[-25:]
+    recent_messages.reverse()
+
+    keywords = []
+    if request_type == 'household':
+      keywords = [
+          'foyer',
+          'household',
+          'regarder maintenant',
+          'temporaire',
+          'travel',
+          'مؤقت',
+      ]
+    elif request_type == 'signin':
+      keywords = [
+          'identifier',
+          'code',
+          'sign-in',
+          'login',
+          'تسجيل الدخول',
+          'connexion',
+      ]
+    elif request_type == 'tv':
+      keywords = ['tv', 'appareil', 'device', 'تلفزيون', 'confirmer', 'confirmation']
+    elif request_type == 'update_foyer':
+      keywords = [
+          'mettre à jour',
+          'update',
+          'foyer',
+          'household',
+          'demande',
+          'الفوكس',
+          'ip',
+      ]
+    elif request_type == 'password':
+      keywords = [
+          'mot de passe',
+          'password',
+          'réinitialiser',
+          'reset',
+          'كلمة المرور',
+      ]
+    else:
+      keywords = ['netflix']
+
+    target_lower = target_email.strip().lower()
+    now = datetime.now()
+
+    for num in recent_messages:
+      status, data = mail.fetch(num, '(RFC822)')
+      if status != 'OK' or not data:
+        continue
+      raw_email = data[0][1]
+      msg = email.message_from_bytes(raw_email)
+      date_header = msg.get('Date')
+      if date_header:
+        try:
+          msg_date = parsedate_to_datetime(date_header)
+          if msg_date and msg_date.tzinfo:
+            msg_date = msg_date.astimezone().replace(tzinfo=None)
+          if msg_date and (now - msg_date).total_seconds() > 900:
+            continue
+        except:
+          pass
+
+      body = ''
+      if msg.is_multipart():
+        for part in msg.walk():
+          if part:
+            content_type = part.get_content_type()
+            content_disposition = str(part.get('Content-Disposition'))
+            if (
+                content_type in ['text/plain', 'text/html']
+                and 'attachment' not in content_disposition
+            ):
+              payload = part.get_payload(decode=True)
+              if payload:
+                body += payload.decode(errors='ignore') + '\n'
+      else:
+        payload = msg.get_payload(decode=True)
+        if payload:
+          body = payload.decode(errors='ignore')
+
+      body_lower = body.lower()
+      msg_str_lower = str(msg).lower()
+      is_target_email_match = (
+          (target_lower in body_lower)
+          or (target_lower in msg_str_lower)
+          or (target_lower in YAHOO_ACCOUNTS)
+      )
+
+      if is_target_email_match:
+        if any(k in body_lower or k in msg_str_lower for k in keywords):
+          if request_type == 'signin':
+            code = extract_netflix_code(body)
+            if code:
+              try:
+                mail.logout()
+              except:
+                pass
+              increment_request_stat(target_email)
+              return (
+                  f'🔑 <b>Votre code de connexion :</b> <code>{code}</code>\n\n📫'
+                  ' <b>Source : Boîte de réception</b>\n\n⏳ <i>Ce message sera'
+                  ' supprimé automatiquement dans 45 secondes.</i>'
+              )
+          else:
+            link = extract_netflix_link(body, request_type)
+            if link:
+              try:
+                mail.logout()
+              except:
+                pass
+              increment_request_stat(target_email)
+              return (
+                  '🔗 <b>Lien de confirmation :</b>\n\n👉 <a'
+                  f" href='{link}'>Cliquer ici pour ouvrir"
+                  ' directement</a>\n\n⏳ <i>Ce message sera supprimé'
+                  ' automatiquement dans 45 secondes.</i>'
+              )
+
+    try:
+      mail.logout()
+    except:
+      pass
+    return (
+        '⚠️ Aucun message récent (dans les 15 dernières minutes) n\'a été trouvé'
+        f' pour l\'e-mail <code>{target_email}</code>.'
+    )
+  except Exception as e:
+    if mail:
+      try:
+        mail.logout()
+      except:
+        pass
+    notify_admin_error(f'Error fetching email for {target_email}: {e}')
+    return f'❌ Une erreur est survenue lors de la vérification des e-mails : {e}'
+
+
+def get_main_keyboard():
+  markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+  markup.add(KeyboardButton('📧 إدخال بريد جديد'), KeyboardButton('📞 الدعم الفني'))
+  return markup
+
+
+def get_result_inline_markup():
+  markup = InlineKeyboardMarkup()
+  markup.add(
+      InlineKeyboardButton(
+          '📱 Contact WhatsApp',
+          url=f"https://wa.me/{WHATSAPP_NUMBER.replace('+', '')}",
+      ),
+      InlineKeyboardButton(
+          '🔄 Demander un autre service', callback_data='reset_session'
+      ),
+  )
+  return markup
+
+
+def show_service_options(chat_id, email_addr):
+  if chat_id and email_addr:
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton('🏠 Foyer', callback_data='type_household'),
+        InlineKeyboardButton(
+            '🔄 Mettre à jour Foyer', callback_data='type_update_foyer'
+        ),
+    )
+    markup.add(
+        InlineKeyboardButton(
+            '🔑 Code de connexion', callback_data='type_signin'
+        ),
+        InlineKeyboardButton('📺 Lien TV', callback_data='type_tv'),
+    )
+    markup.add(
+        InlineKeyboardButton('🔒 Mot de passe', callback_data='type_password')
+    )
+    msg = bot.send_message(
+        chat_id,
+        f'📧 <b>E-mail sélectionné :</b>'
+        f' <code>{email_addr}</code>\n\nVeuillez choisir le type de service'
+        ' demandé :',
+        reply_markup=markup,
+        parse_mode='HTML',
+    )
+    track_message(chat_id, msg.message_id)
+
+
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+  if message and message.chat:
+    chat_id = message.chat.id
+    register_user(message)
+    clean_previous_messages(chat_id)
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton('❓ Aide', callback_data='help'))
+    markup.add(
+        InlineKeyboardButton(
+            '📱 Contact WhatsApp',
+            url=f"https://wa.me/{WHATSAPP_NUMBER.replace('+', '')}",
+        )
+    )
+    banner_path = create_banner_with_text('Zaki', NETFLIX_IMAGE_URL)
+    welcome_text = (
+        '<b>🔴 Zaki : Sponsoring officiel Netflix en Algérie et Afrique du'
+        ' Nord 🍿</b>\n\n📊 <b>Bienvenue sur le bot de récupération des codes et'
+        ' liens Netflix</b>\n\n'
+        f'📱 <b>Numéro WhatsApp :</b> <code>{WHATSAPP_NUMBER}</code>\n\nEnvoyez'
+        " l'adresse e-mail enregistrée pour obtenir le lien d'accès"
+        ' temporaire ou le code de connexion.'
+    )
+    bot.send_message(
+        chat_id,
+        'مرحباً بك! اختر من القائمة السفلى أو أدخل البريد الإلكتروني مباشرة:',
+        reply_markup=get_main_keyboard(),
+    )
+    try:
+      if banner_path and os.path.exists(banner_path):
+        with open(banner_path, 'rb') as photo:
+          sent_msg = bot.send_photo(
+              chat_id,
+              photo,
+              caption=welcome_text,
+              reply_markup=markup,
+              parse_mode='HTML',
+          )
+      else:
+        sent_msg = bot.send_photo(
+            chat_id,
+            NETFLIX_IMAGE_URL,
+            caption=welcome_text,
+            reply_markup=markup,
+            parse_mode='HTML',
+        )
+      track_message(chat_id, sent_msg.message_id)
+    except:
+      sent_msg = bot.send_message(
+          chat_id, welcome_text, reply_markup=markup, parse_mode='HTML'
+      )
+      track_message(chat_id, sent_msg.message_id)
+
+
+@bot.message_handler(commands=['admin'])
+def admin_panel(message):
+  if message and message.chat and message.from_user:
+    chat_id = message.chat.id
+    register_user(message)
+    user_id = message.from_user.id
+    if ADMIN_IDS and user_id not in ADMIN_IDS:
+      return
+    total_emails = len(subscriptions)
+    active_emails = sum(
+        1 for sub in subscriptions.values() if sub and sub.get('active', True)
+    )
+    inactive_emails = total_emails - active_emails
+    total_users = len(all_bot_users)
+    admin_text = (
+        '🛠 <b>لوحة تحكم المشرف المتقدمة (Admin Dashboard)</b>\n\n'
+        f'📊 <b>إجمالي الإيميلات:</b> <code>{total_emails}</code>\n'
+        f'🟢 <b>الإيميلات المشتغلة:</b> <code>{active_emails}</code>\n'
+        f'🔴 <b>الإيميلات المتوقفة/المنتهية:</b> <code>{inactive_emails}</code>\n'
+        f'👥 <b>المستخدمين المسجلين:</b> <code>{total_users}</code> | 🔄'
+        ' <b>الطلبات الناجحة:</b>'
+        f" <code>{stats_data.get('requests_count', 0)}</code>"
+    )
+    markup = InlineKeyboardMarkup()
+    markup.add(
+        InlineKeyboardButton(
+            '📊 حالة النظام والإحصائيات', callback_data='admin_stats'
+        )
+    )
+    markup.add(
+        InlineKeyboardButton(
+            '📧 عرض قائمة الإيميلات والمشتركين',
+            callback_data='admin_list_emails',
+        )
+    )
+    markup.add(
+        InlineKeyboardButton(
+            '📢 إذاعة رسالة مع صورة وتفاعلات', callback_data='admin_broadcast'
+        )
+    )
+    markup.add(
+        InlineKeyboardButton(
+            '🗑 حذف آخر إذاعة', callback_data='admin_delete_broadcast'
+        )
+    )
+    sent_msg = bot.send_message(
+        chat_id, admin_text, reply_markup=markup, parse_mode='HTML'
+    )
+    track_message(chat_id, sent_msg.message_id)
+
+
+@bot.message_handler(func=lambda message: True)
+def handle_all_messages(message):
+  if (
+      not message
+      or not message.chat
+      or not message.from_user
+      or not message.text
+  ):
+    return
+  chat_id = message.chat.id
+  user_id = message.from_user.id
+  text = message.text.strip()
+
+  # --- أوامر التحكم السريع للمشرفين (Admin Commands) ---
+  if ADMIN_IDS and user_id in ADMIN_IDS:
+    if text.startswith('+') and '@' in text:
+      content = text[1:].strip()
+      days = 31
+      target_email = ''
+      client_name_input = []
+
+      words = content.split()
+      for word in words:
+        if '@' in word:
+          target_email = word.strip().lower()
+        elif word.isdigit():
+          days = int(word)
+        else:
+          client_name_input.append(word)
+
+      client_name = (
+          ' '.join(client_name_input) if client_name_input else 'غير محدد'
+      )
+
+      if target_email:
+        start_dt = datetime.now()
+        expiry_date = (start_dt + timedelta(days=days)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+
+        matched_user_id = 'Unknown_ID'
+        for uid, name in all_bot_users.items():
+          if name and client_name.lower() in name.lower():
+            matched_user_id = uid
+            break
+
+        subscriptions[target_email] = {
+            'active': True,
+            'expiry': expiry_date.isoformat(),
+            'owner_id': (
+                matched_user_id if matched_user_id != 'Unknown_ID' else None
+            ),
+            'client_name': client_name,
+            'notified_expiry': False,
+        }
+        save_subscriptions(subscriptions)
+
+        save_sale_to_client_file(
+            client_name,
+            matched_user_id,
+            target_email,
+            days,
+            start_dt,
+            expiry_date,
+        )
+
+        bot.send_message(
+            chat_id,
+            '✅ <b>تمت إضافة وتفعيل الحساب بنجاح وتوثيقه في ملف الزبون:</b>\n\n'
+            f'📧 <b>البريد:</b> <code>{target_email}</code>\n'
+            f'👤 <b>اسم الزبون:</b> <code>{client_name}</code>\n'
+            f'🆔 <b>مُعرف التليجرام:</b> <code>{matched_user_id}</code>\n'
+            f'⏳ <b>المدة:</b> <code>{days} يوماً</code>\n'
+            f'🔴 <b>ينتهي في:</b> <code>{expiry_date.strftime("%d/%m/%Y")}</code>',
+            parse_mode='HTML',
+        )
+      else:
+        bot.send_message(
+            chat_id,
+            '⚠️ صيغة غير صحيحة. مثال للاستخدام: <code>+31 example@gmail.com'
+            ' اسم_الزبون</code>',
+            parse_mode='HTML',
+        )
+      return
+
+    elif text.startswith('!'):
+      words = text[1:].strip().split()
+      blocked_count = 0
+      not_found_list = []
+
+      for word in words:
+        email_to_block = word.strip().lower()
+        if '@' in email_to_block:
+          if email_to_block in subscriptions:
+            subscriptions[email_to_block]['active'] = False
+            blocked_count += 1
+          else:
+            not_found_list.append(email_to_block)
+
+      if blocked_count > 0:
+        save_subscriptions(subscriptions)
+        msg_reply = f'⏸ <b>تم إيقاف {blocked_count} بريداً مؤقتاً بنجاح.</b>'
+        if not_found_list:
+          msg_reply += f"\n\n⚠️ <b>لم يتم العثور عليها:</b> {', '.join(not_found_list)}"
+        bot.send_message(chat_id, msg_reply, parse_mode='HTML')
+      else:
+        bot.send_message(chat_id, '⚠️ لم يتم العثور على أي بريد صالح للإيقاف.')
+      return
+
+
+if __name__ == '__main__':
+  keep_alive()
+  bot.infinity_polling()
