@@ -42,7 +42,7 @@ def keep_alive():
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv(
-    'TELEGRAM_BOT_TOKEN', '8415364406:AAGBVGsuVkQ6VBQN1ao8D_dh0fRKR3QJfgg'
+    'TELEGRAM_BOT_TOKEN', '8415364406:AAHhLyT42wIH1vsdkb16fHscZbYttShg1rU'
 )
 IMAP_SERVER = 'imap.gmail.com'
 EMAIL_ACCOUNT = os.getenv('EMAIL_ACCOUNT', 'hrdwrermdy@gmail.com')
